@@ -1,0 +1,294 @@
+---
+title: "Final Project"
+author: "Zixuan Wu, Omar Youssef, Zachary Hunter, Nguyet Minh Chu"
+date: "10/15/2022"
+output: 
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Import raw data
+
+```{r}
+install.packages("readr", repos = "http://cran.us.r-project.org")
+library(readr)
+df <- read_csv("~/Documents/BMSO758G Customer Equity Management/final project/CHURN.csv")
+```
+
+#Data Preparation
+```{r}
+library(tidyr)
+library(datasets)
+library(caTools)
+library(party)
+library(dplyr)
+library(magrittr)
+library(pROC)
+
+set.seed(123)
+train <- subset(df, df$CHURNDEP ==1 | df$CHURNDEP ==0)
+test <- subset(df, is.na(df$CHURNDEP))
+
+train <- subset(train, select = -c(CSA, CHURNDEP, CALIBRAT, CUSTOMER))
+test <- subset(test, select = -c(CSA, CHURNDEP, CALIBRAT, CUSTOMER) )
+
+train <- drop_na(train)
+test <- drop_na(test)
+
+## Determine varibales with highest correlation to minimize used data
+
+cor <- cor(train$CHURN, train)
+
+csort <- as.data.frame(as.table(cor))
+cs <- subset(csort, abs(Freq) > 0.05)
+z=cs[order(-abs(cs$Freq)),]
+z
+
+## Condense raw data to high correlation data only
+
+train <- subset(train, select = c(CHURN,EQPDAYS,WEBCAP,RETCALL,RETCALLS,RECCHRGE,CREDITDE,MOU))
+test <- subset(test, select = c(CHURN,EQPDAYS,WEBCAP,RETCALL,RETCALLS,RECCHRGE,CREDITDE,MOU))
+
+train <- drop_na(train)
+test <- drop_na(test)
+```
+
+----------------Logistic Regression--------------------
+
+```{r}
+fit <- glm(CHURN ~ ., data = train, family = "binomial")
+summary(fit)
+```
+
+```{r}
+library(ROCR)
+p <- predict(fit, newdata=test)
+pr <- prediction(p, test$CHURN)
+prf <- performance(pr, measure = "tpr", x.measure = "fpr")
+plot(prf)
+auc <- performance(pr, measure = "auc")
+auc <- auc@y.values[[1]]
+auc
+
+## ROC 
+library(pROC)
+par(pty="s")
+roc_rose <- plot(roc(test$CHURN, p), 
+                 print.auc = TRUE, col = "blue", xlab="1-Specificity")
+```
+
+```{r}
+#Lift Chart
+actual <- test$CHURN
+df_lr <- data.frame(p,actual)
+df_lr1 <- df_lr[order(-p),]
+df_lr1$Gains <- cumsum(df_lr1$actual)
+plot(df_lr1$Gains,type="n",main="Validation Data Lift Chart",xlab="Number of Cases",ylab="Cumulative Success")
+lines(df_lr1$Gains,lty = 2, col="blue")
+abline(0,sum(df_lr1$actual)/nrow(df_lr1),lty = 2, col="red")
+```
+
+```{r}
+install.packages("lift")
+library(lift)
+plotLift(p, test$Churn, cumulative = TRUE,n.buckets=10)
+```
+
+
+```{r}
+remove.packages("data.table")
+install.packages("data.table")
+```
+
+```{r}
+actual <- test$CHURN
+decile_Lift <- function(df1_test) {
+df1_test <- test[order(-p),]
+df1_test$roworder <- 1:nrow(df1_test)
+baseline <- sum(df1_test$actual) / 10
+df1_test$decile <- ceiling((df1_test$roworder / nrow(df1_test)) * 10)
+library("data.table")
+  dt <- data.table(df1_test)
+  dt <- dt[, sum(actual), by = decile]
+  dt$baseline <- baseline
+barplot(t(data.frame(dt$V1,dt$baseline)), main="Decile wise comparision of successes", xlab="Deciles", col=c("darkblue","red"), beside=TRUE, names=dt$decile)
+  barplot(t(data.frame(dt$V1)/data.frame(dt$baseline)), main="Decile wise comparision of successes", xlab="Deciles", col=c("darkblue"), beside=TRUE, names=dt$decile)
+}
+decile_Lift(df1_test) 
+```
+
+
+--------------------Naive Bayes Model------------------------
+
+```{r}
+train$EQPDAYS<- as.factor(train$EQPDAYS)
+train$WEBCAP<- as.factor(train$WEBCAP)
+train$RETCALL<- as.factor(train$RETCALL)
+train$RETCALLS<- as.factor(train$RETCALLS)
+train$CREDITDE<- as.factor(train$CREDITDE)
+train$MOU <- as.factor(train$MOU)
+
+test$EQPDAYS<- as.factor(test$EQPDAYS)
+test$WEBCAP<- as.factor(test$WEBCAP)
+test$RETCALL<- as.factor(test$RETCALL)
+test$RETCALLS<- as.factor(test$RETCALLS)
+test$CREDITDE<- as.factor(test$CREDITDE)
+test$MOU <- as.factor(test$MOU)
+
+### Function to call NB ####
+library(e1071)
+model <- naiveBayes(CHURN~., data=train)
+model 
+
+### Class Predictions ###
+prediction <- predict(model, newdata = test)
+table(test$CHURN,prediction,dnn=list('actual','predicted'))
+predicted.probability <- predict(model, newdata = test, type="raw")
+model$apriori
+
+## 
+actual <- test$CHURN 
+prob <- predicted.probability[,1] 
+df1 <- data.frame(actual, prob)
+### Lift Chart ###
+lift <- function(df) {
+  df1S <- df[order(prob),]
+  df1S$Gains <- cumsum(df1S$actual)
+  p <- plot(df1S$Gains,type="n",main="Lift Chart",xlab="Number of Cases", 
+            ylab="Cumulative Success")
+  lines(df1S$Gains,col="blue")
+  abline(0,sum(df1S$actual)/nrow(df1S),lty = 2, col="red")
+  return(p)
+}
+lift(df1)
+
+## ROC 
+library(pROC)
+par(pty="s")
+roc_rose <- plot(roc(test$CHURN, prob), 
+                 print.auc = TRUE, col = "blue", xlab="1-Specificity")
+```
+
+---------------------------Decision Tree----------------------
+
+```{r}
+library(readxl)
+df <- read_csv("~/Documents/BMSO758G Customer Equity Management/final project/CHURN.csv")
+
+set.seed(123)
+train <- subset(df, df$CHURNDEP ==1 | df$CHURNDEP ==0)
+test <- subset(df, is.na(df$CHURNDEP))
+
+train <- subset(train, select = -c(CSA, CHURNDEP, CALIBRAT, CUSTOMER))
+test <- subset(test, select = -c(CSA, CHURNDEP, CALIBRAT, CUSTOMER) )
+
+train <- drop_na(train)
+test <- drop_na(test)
+
+## Determine varibales with highest correlation to minimize used data
+
+cor <- cor(train$CHURN, train)
+
+csort <- as.data.frame(as.table(cor))
+cs <- subset(csort, abs(Freq) > 0.05)
+z=cs[order(-abs(cs$Freq)),]
+z
+
+## Condense raw data to high correlation data only
+
+train <- subset(train, select = c(CHURN,EQPDAYS,WEBCAP,RETCALL,RETCALLS,RECCHRGE,CREDITDE,MOU))
+test <- subset(test, select = c(CHURN,EQPDAYS,WEBCAP,RETCALL,RETCALLS,RECCHRGE,CREDITDE,MOU))
+
+train <- drop_na(train)
+test <- drop_na(test)
+
+tree<- ctree(CHURN ~ ., train)
+print(tree)
+plot(tree, type = "simple")
+
+tree.pred=predict(tree, test)
+CM = table(tree.pred,test$CHURN)
+(Acc = (CM[1,1]+CM[2,2])/sum(CM))
+
+test_prob_tree = predict(tree, test, type = "response")
+par(pty="s")
+test_roc_tree = roc(test$CHURN ~ test_prob_tree, plot = TRUE, print.auc = TRUE)
+
+as.numeric(test_roc_tree$auc)
+```
+
+```{r}
+#Lift Chart
+actual <- test$CHURN
+df_dt <- data.frame(test_prob_tree,actual)
+df_dt1 <- df_dt[order(-test_prob_tree),]
+df_dt1$Gains <- cumsum(df_dt1$actual)
+plot(df_dt1$Gains,type="n",main="Validation Data Lift Chart",xlab="Number of Cases",ylab="Cumulative Success")
+lines(df_dt1$Gains,lty = 2, col="blue")
+abline(0,sum(df_dt1$actual)/nrow(df_dt1),lty = 2, col="red")
+```
+
+
+------------------------------GBM----------------------------
+
+```{r}
+library(gbm)
+library(rlang)
+library(tidyr)
+library(pROC)
+
+boost = gbm(CHURN~., data= train, distribution = "bernoulli", n.trees=1000, interaction.depth=6, cv.folds = 3)
+
+summary(boost)
+
+optcv <- gbm.perf(boost, method = "cv")
+optoob <- gbm.perf(boost, method = "OOB")
+print(optcv)
+print(optoob)
+
+probgbm <- predict(boost, newdata = test, n.trees = optcv, type = "response") 
+
+cm = table(test$CHURN,ifelse(probgbm>.5,1,0))
+
+print('The CM for GBM is: ')
+print(cm)
+cat('The accuracy for GBM is: ',round((cm[1,1] + cm[2,2])/sum(cm),3),'\n')
+
+(Accuracy = (cm[1,1]+cm[2,2])/sum(cm))
+(Sensitivity = cm[2,2]/sum(cm[2,1]+cm[2,2]))
+(Specificity = cm[1,1]/sum(cm[1,1]+cm[1,2]))
+(Precision = cm[2,2]/sum(cm[1,2]+cm[2,2]))
+
+test_prob_gbm = predict(boost, test, type = "response")
+
+test_roc_gbm = roc(test$CHURN ~ test_prob_gbm, plot = TRUE, print.auc = TRUE)
+
+as.numeric(test_roc_gbm$auc)
+```
+```{r}
+#Lift Chart
+actual <- test$CHURN
+df_gbm <- data.frame(test_prob_gbm,actual)
+df_gbm1 <- df_gbm[order(-test_prob_gbm),]
+df_gbm1$Gains <- cumsum(df_gbm1$actual)
+plot(df_gbm1$Gains,type="n",main="Validation Data Lift Chart",xlab="Number of Cases",ylab="Cumulative Success")
+lines(df_gbm1$Gains,lty = 2, col="blue")
+abline(0,sum(df_gbm1$actual)/nrow(df_gbm1),lty = 2, col="red")
+```
+
+----------------------Comparison of All Models---------------------
+
+```{r}
+par(pty="s")
+roc_rose <- plot(roc(test$CHURN, p), col = "red", xlab="1-Specificity")
+roc_rose <- plot(roc(test$CHURN, prob), col = "blue", add = TRUE)
+roc_rose <- plot(roc(test$CHURN,tree.pred), col = "green",add=TRUE)
+roc_rose <- plot(roc(test$CHURN,probgbm), col = "black",add=TRUE)
+legend(0.4,0.2, legend=c("Logistic Regression: 0.594", "Naive Bayes: 0.573","Decision Tree: 0.616","GBM: 0.625"),
+       fill = c("red","blue","green","black"),cex=0.5)
+```
+
+
